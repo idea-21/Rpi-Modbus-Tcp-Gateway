@@ -1,0 +1,11 @@
+在树莓派zero 2 W上配置自启动GUI：
+1. 在终端输入：nano ~/.config/autostart/modbus_gui.desktop
+2. 在文件中输入：
+[Desktop Entry]
+Type=Application
+Name=Modbus GUI
+Comment=Starts the Modbus server and GUI display
+Exec=bash -c 'cd /home/admin/Documents/modbus_serverV1 && /home/admin/Documents/modbus_serverV1/venv/bin/python3 main.py > /dev/null 2>&1'
+Terminal=false
+
+3. ctrl + X， Y ，Enter 保存退出
