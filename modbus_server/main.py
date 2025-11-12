@@ -8,6 +8,13 @@ import threading
 import logging
 import configparser
 import time
+from collections import deque
+import queue
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 # Modbus Imports
 from pymodbus.server import StartTcpServer
@@ -16,6 +23,12 @@ from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, M
 # Import your custom handlers
 from gpio_handler import setup_gpio, update_gpio_loop
 from rs485_handler import update_from_rs485_loop
+
+CHART_DATA_POINTS = 100
+CHART_UPDATE_INTERVAL = 1000
+IDEAL_CONDUCTIVITY = 300.0
+UPPER_LIMIT = 450.0
+LOWER_LIMIT = 150.0
 
 # --------------------------------------------------------------------------- #
 # Basic Configuration
@@ -28,19 +41,22 @@ config.read('config.ini')
 
 DEVICE_ID = config.getint('Modbus', 'UnitID', fallback=1)
 SERVER_IP = config.get('TCPServer', 'Host', fallback='0.0.0.0')
-SERVER_PORT = config.getint('TCPServer', 'Port', fallback=502)
+SERVER_PORT = config.getint('TCPServer', 'Port', fallback=5020)
 
 # --------------------------------------------------------------------------- #
 # GUI Application Class
 # --------------------------------------------------------------------------- #
 class ServerDisplayApp:
-    def __init__(self, root):
+    def __init__(self, root, data_queue):
         self.root = root
+        self.data_queue = data_queue
         self.root.title("Modbus Server Status")
         self.root.attributes('-fullscreen', True)
         self.root.configure(bg='#1c1c1c')
         # Press ESC to exit fullscreen and close the application
-        self.root.bind("<Escape>", lambda e: root.destroy()) 
+        self.root.bind("<Escape>", lambda e: root.destroy())
+        
+        self.conductivity_data = deque(maxlen=CHART_DATA_POINTS)
 
         # --- Create data variables ---
         self.conductivity_var = tk.StringVar(value="--.-- uS/cm")
@@ -49,15 +65,59 @@ class ServerDisplayApp:
         self.red_light_var = tk.StringVar(value="OFF")
         self.yellow_light_var = tk.StringVar(value="OFF")
         self.green_light_var = tk.StringVar(value="OFF")
-
+        
+        self.create_widgets()
+        self.update_chart()
+        self.process_queue()
+        
+    def process_queue(self):
+        """
+        Process messages from the data_queue in a thread-safe way.
+        """
+        try:
+            while not self.data_queue.empty():
+                message = self.data_queue.get_nowait()
+                # Expected message format: a tuple ('key', value)
+                key, value = message
+                
+                if key == 'conductivity':
+                    self.conductivity_var.set(f"{value:.2f} uS/cm")
+                elif key == 'concentration':
+                    self.concentration_var.set(f"{value:.4f} %")
+                elif key == 'status':
+                    self.status_var.set(str(value))
+                elif key == 'red_light':
+                    self.red_light_var.set(str(value))
+                elif key == 'yellow_light':
+                    self.yellow_light_var.set(str(value))
+                elif key == 'green_light':
+                    self.green_light_var.set(str(value))
+                
+        except queue.Empty:
+            pass
+        finally:
+            # Schedule the next check in 100ms
+            self.root.after(100, self.process_queue)
+    
+    def create_widgets(self):
+        main_frame = tk.Frame(self.root, bg='#1c1c1c')
+        main_frame.pack(expand=True, fill='both', padx=20, pady=20)
+        main_frame.grid_rowconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1) # Left side
+        main_frame.grid_columnconfigure(1, weight=3) # Right side (chart) takes more space
+        
+        # --- Left panel for data and lights ---
+        left_panel = tk.Frame(main_frame, bg='#1c1c1c')
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
+        
+        # --- Right panel for the chart ---
+        right_panel = tk.Frame(main_frame, bg='#1c1c1c')
+        right_panel.grid(row=0, column=1, sticky="nsew")
+        
         # --- Setup fonts ---
         title_font = ("Helvetica", 20, "bold")
         value_font = ("Helvetica", 40, "bold")
         status_font = ("Helvetica", 10)
-
-        # --- Main layout frame ---
-        main_frame = tk.Frame(root, bg='#1c1c1c')
-        main_frame.pack(expand=True, fill='both', padx=20, pady=20)
 
         # --- Light status section ---
 #         lights_frame = tk.Frame(main_frame, bg='#1c1c1c')
@@ -67,7 +127,7 @@ class ServerDisplayApp:
 #         self.create_light_indicator(lights_frame, "Green Light", self.green_light_var, "green")
 
         # --- Measurement data display section ---
-        data_frame = tk.Frame(main_frame, bg='#1c1c1c')
+        data_frame = tk.Frame(left_panel, bg='#1c1c1c')
         data_frame.pack(pady=20, fill='x', expand=True)
 
         tk.Label(data_frame, text="Conductivity", font=title_font, fg='white', bg='#1c1c1c').pack()
@@ -76,15 +136,74 @@ class ServerDisplayApp:
         tk.Label(data_frame, text="Concentration", font=title_font, fg='white', bg='#1c1c1c').pack(pady=(20, 0))
         tk.Label(data_frame, textvariable=self.concentration_var, font=value_font, fg='#32CD32', bg='#1c1c1c').pack()
 
+        self.create_chart(right_panel)
         # --- Status Bar ---
-        tk.Label(root, textvariable=self.status_var, font=status_font, fg='grey', bg='#1c1c1c', anchor='w').pack(side="bottom", fill="x", padx=10, pady=5)
+        tk.Label(self.root, textvariable=self.status_var, font=status_font, fg='grey', bg='#1c1c1c', anchor='w').pack(side="bottom", fill="x", padx=10, pady=5)
 
-    def create_light_indicator(self, parent, text, variable, color):
-        frame = tk.Frame(parent, bg='#1c1c1c')
-        frame.pack(side='left', expand=True)
-        tk.Label(frame, text=text, font=("Helvetica", 16), fg='white', bg='#1c1c1c').pack()
-        label = tk.Label(frame, textvariable=variable, font=("Helvetica", 24, "bold"), fg=color, bg='#1c1c1c', width=4)
-        label.pack()
+    def create_chart(self, parent):
+        self.fig = Figure(figsize=(8, 6), dpi=100)
+        self.fig.patch.set_facecolor('#1c1c1c') # Set figure background color
+
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor('#2a2a2a') # Set axes background color
+        self.ax.tick_params(axis='x', colors='white')
+        self.ax.tick_params(axis='y', colors='white')
+        self.ax.spines['bottom'].set_color('white')
+        self.ax.spines['top'].set_color('white') 
+        self.ax.spines['right'].set_color('white')
+        self.ax.spines['left'].set_color('white')
+        self.ax.title.set_color('white')
+        self.ax.xaxis.label.set_color('white')
+        self.ax.yaxis.label.set_color('white')
+
+        self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas.draw()
+        
+    def update_chart(self):
+        # Step 1: Get data from the StringVar
+        current_value_str = self.conductivity_var.get().split(' ')[0]
+        try:
+            # Convert string to float, handle initial "--.--" state
+            current_value = float(current_value_str)
+            self.conductivity_data.append(current_value)
+        except (ValueError, IndexError):
+            # If conversion fails, do nothing and wait for the next update
+            pass
+        
+        # Step 2: Redraw the plot
+        self.ax.clear()
+
+        # Plot the main data line
+        if self.conductivity_data:
+             self.ax.plot(list(self.conductivity_data), label="COND", color="#00BFFF", linewidth=2)
+        
+        # Plot the three horizontal lines
+        self.ax.axhline(y=UPPER_LIMIT, color='red', linestyle='--', label=f"UPPER: {UPPER_LIMIT}")
+        self.ax.axhline(y=LOWER_LIMIT, color='green', linestyle='--', label=f"LOWER: {LOWER_LIMIT}")
+        self.ax.axhline(y=IDEAL_CONDUCTIVITY, color='yellow', linestyle=':', label=f"IDEAL: {IDEAL_CONDUCTIVITY}")
+
+        # Step 3: Style the plot
+        self.ax.set_title("on-time chart", color='white')
+        self.ax.set_ylabel("cond (uS/cm)", color='white')
+        self.ax.set_xlabel("time", color='white')
+        self.ax.grid(True, linestyle='--', alpha=0.3)
+        
+        legend = self.ax.legend()
+        for text in legend.get_texts():
+            text.set_color("white")
+        
+        # Adjust Y-axis limits for better visibility
+        if self.conductivity_data:
+            min_val = min(min(self.conductivity_data), LOWER_LIMIT)
+            max_val = max(max(self.conductivity_data), UPPER_LIMIT)
+            self.ax.set_ylim(min_val - 10, max_val + 10)
+
+        # Step 4: Redraw canvas
+        self.canvas.draw()
+        
+        # Step 5: Schedule the next update
+        self.root.after(CHART_UPDATE_INTERVAL, self.update_chart)
 
 # --------------------------------------------------------------------------- #
 # Main Execution Block
@@ -98,37 +217,30 @@ if __name__ == "__main__":
         ir=ModbusSequentialDataBlock(0, [0] * 100),
     )
     context = ModbusServerContext(devices={DEVICE_ID: store}, single=False)
+    
+    data_queue = queue.Queue()
 
     # 2. Create GUI window and variables
     log.info("Starting GUI...")
     root_window = tk.Tk()
-    app = ServerDisplayApp(root_window)
-    
-    gui_variables = {
-        'conductivity': app.conductivity_var,
-        'concentration': app.concentration_var,
-        'status': app.status_var,
-        'red_light': app.red_light_var,
-        'yellow_light': app.yellow_light_var,
-        'green_light': app.green_light_var,
-    }
+    app = ServerDisplayApp(root_window, data_queue)
 
     # 3. Setup and start GPIO handler thread
-    log.info("Starting GPIO polling thread...")
-    gpio_inputs = setup_gpio()
-    gpio_thread = threading.Thread(
-        target=update_gpio_loop,
-        args=(context, DEVICE_ID, gpio_inputs, gui_variables), # pass GUI variables
-        daemon=True,
-        name="GPIO_Thread"
-    )
-    gpio_thread.start()
-
+#     log.info("Starting GPIO polling thread...")
+#     gpio_inputs = setup_gpio()
+#     gpio_thread = threading.Thread(
+#         target=update_gpio_loop,
+#         args=(context, DEVICE_ID, gpio_inputs, gui_variables), # pass GUI variables
+#         daemon=True,
+#         name="GPIO_Thread"
+#     )
+#     gpio_thread.start()
+    
     # 4. Start RS485 handler thread
     log.info("Starting RS485 polling thread...")
     rs485_thread = threading.Thread(
         target=update_from_rs485_loop,
-        args=(config, context, DEVICE_ID, gui_variables), # pass GUI variables
+        args=(config, context, DEVICE_ID, data_queue), # pass GUI variables
         daemon=True,
         name="RS485_Thread"
     )

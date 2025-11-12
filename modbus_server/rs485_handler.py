@@ -18,11 +18,11 @@ def conductivity_to_concentration(conductivity):
     Formula 1: y = 1.959077 + (-4705.243 - 1.959077) / (1 + (x / 3.141543) ** 1.034152)
     Formula 2: y = 1.488193 + (0.0005473823 - 1.488193)/(1 + (x/9185.638)^2.768677)
     Formula 3: y = 0.000093x + -0.140785
-    New calibration 1: y = 0.000091x + -0.122020
-    New calibration 2: y = 0.000091x + -0.120919
-    New calibration 3: y = 0.000091x + -0.122480
-    New calibration 4: y = 0.000091x + -0.120737
-    #New calibration 5 (currently active): y = 0.000092x + -0.126115
+    Formula 4: y = 0.000091x + -0.122020
+    New calibration: y = 0.000091x + -0.120919
+    New calibration 2: y = 0.000091x + -0.122480
+    New calibration 3: y = 0.000091x + -0.120737
+    #New calibration 4 (currently active): y = 0.000092x + -0.126115
     
     Where x is the conductivity (uS/cm) and y is the concentration (%).
     """
@@ -55,9 +55,8 @@ def conductivity_to_concentration(conductivity):
     except Exception as e:
         print(f"An unknown error occurred while calculating concentration for input value {conductivity}: {e}")
         return 0.0
-
-
-def update_from_rs485_loop(config, context, device_id):
+    
+def update_from_rs485_loop(config, context, device_id, data_queue=None):
     """
     Continuously polls the RS485 device and updates the Modbus context.
     """
@@ -89,8 +88,7 @@ def update_from_rs485_loop(config, context, device_id):
                     log.error("Reconnect failed. Retrying in the next cycle.")
                     time.sleep(poll_interval)
                     continue
-                
-            #******************************************#
+                        #******************************************#
             # One-time device configuration block
             if not is_configured:
                 log.info("Performing one-time device configuration check...")
@@ -120,7 +118,6 @@ def update_from_rs485_loop(config, context, device_id):
                     # which could block the main functionality.
                     is_configured = True
             #******************************************#
-
             result = client.read_holding_registers(address=read_addr, count=read_count, device_id=slave_id)
             
             result2 = client.read_holding_registers(address=32, count=1, device_id=slave_id)
@@ -155,14 +152,12 @@ def update_from_rs485_loop(config, context, device_id):
                         
                         context[device_id].setValues(3, write_addr_conc, [concentration_register_value])
                         log.info(f"Updated context at addr {write_addr_conc} with concentration value: {concentration_register_value} (representing {concentration_value:.2f} %)")
-                        
                         #**************************************************************#
-                        if gui_vars:
-                            gui_vars['conductivity'].set(f"{conductivity_value:.2f} uS/cm")
-                            gui_vars['concentration'].set(f"{concentration_value:.4f} %")
-                            gui_vars['status'].set(f"RS485 | OK | {time.strftime('%H:%M:%S')}")
+                        if data_queue:
+                            data_queue.put(('conductivity', conductivity_value))
+                            data_queue.put(('concentration', concentration_value))
+                            data_queue.put(('status', f"RS485 OK | {time.strftime('%H:%M:%S')}"))
                         #**************************************************************#
-                            
                     except Exception as e:
                         log.error(f"Error converting registers to float: {e}")
         except Exception as e:
@@ -170,4 +165,5 @@ def update_from_rs485_loop(config, context, device_id):
             client.close()
 
         time.sleep(poll_interval)
-    client.close()
+    client.close()    
+
