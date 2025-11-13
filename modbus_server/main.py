@@ -10,11 +10,13 @@ import configparser
 import time
 from collections import deque
 import queue
+from datetime import datetime, timedelta
 
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.dates as mdates
 
 # Modbus Imports
 from pymodbus.server import StartTcpServer
@@ -24,14 +26,17 @@ from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, M
 from gpio_handler import setup_gpio, update_gpio_loop
 from rs485_handler import update_from_rs485_loop
 
-CHART_DATA_POINTS = 100
 CHART_UPDATE_INTERVAL = 1000
-IDEAL_CONDUCTIVITY = 12500.0
-UPPER_LIMIT_COND = 15000.0
-LOWER_LIMIT_COND = 10000.0
-IDEAL_CONCENTRATION = 1.0
-UPPER_LIMIT_CONC = 1.2
-LOWER_LIMIT_CONC = 0.8
+DATA_LOGGING_INTERVAL_SECONDS = 60
+TOTAL_HISTORY_HOURS = 1
+MAX_HISTORICAL_POINTS = int((TOTAL_HISTORY_HOURS * 3600) / DATA_LOGGING_INTERVAL_SECONDS)
+
+IDEAL_CONDUCTIVITY = 314.5
+UPPER_LIMIT_COND = 315.0
+LOWER_LIMIT_COND = 314.0
+IDEAL_CONCENTRATION = 0.0
+UPPER_LIMIT_CONC = 0.1
+LOWER_LIMIT_CONC = -0.1
 
 # --------------------------------------------------------------------------- #
 # Basic Configuration
@@ -59,17 +64,18 @@ class ServerDisplayApp:
         # Press ESC to exit fullscreen and close the application
         self.root.bind("<Escape>", lambda e: root.destroy())
         
-        self.conductivity_data = deque(maxlen=CHART_DATA_POINTS)
-        self.concentration_data = deque(maxlen=CHART_DATA_POINTS)
+        self.conductivity_data = deque(maxlen=MAX_HISTORICAL_POINTS)
+        self.concentration_data = deque(maxlen=MAX_HISTORICAL_POINTS)
+        
+        self.last_conductivity_value = None
+        self.last_concentration_value = None
 
         # --- Create data variables ---
         self.conductivity_var = tk.StringVar(value="--.-- uS/cm")
         self.concentration_var = tk.StringVar(value="-.---- %")
         self.status_var = tk.StringVar(value="Initializing...")
-        self.red_light_var = tk.StringVar(value="OFF")
-        self.yellow_light_var = tk.StringVar(value="OFF")
-        self.green_light_var = tk.StringVar(value="OFF")
         
+        self.log_data_point()
         self.create_widgets()
         self.update_chart()
         self.process_queue()
@@ -86,8 +92,10 @@ class ServerDisplayApp:
                 
                 if key == 'conductivity':
                     self.conductivity_var.set(f"{value:.2f} uS/cm")
+                    self.last_conductivity_value = value
                 elif key == 'concentration':
                     self.concentration_var.set(f"{value:.4f} %")
+                    self.last_concentration_value = value
                 elif key == 'status':
                     self.status_var.set(str(value))
                 elif key == 'red_light':
@@ -102,6 +110,17 @@ class ServerDisplayApp:
         finally:
             # Schedule the next check in 100ms
             self.root.after(100, self.process_queue)
+            
+    def log_data_point(self):
+        now = datetime.now()
+        
+        if self.last_conductivity_value is not None:
+            self.conductivity_data.append((now, self.last_conductivity_value))
+            
+        if self.last_concentration_value is not None:
+            self.concentration_data.append((now, self.last_concentration_value))
+        
+        self.root.after(DATA_LOGGING_INTERVAL_SECONDS * 1000, self.log_data_point)
     
     def create_widgets(self):
         main_frame = tk.Frame(self.root, bg='#1c1c1c')
@@ -122,13 +141,6 @@ class ServerDisplayApp:
         title_font = ("Helvetica", 20, "bold")
         value_font = ("Helvetica", 40, "bold")
         status_font = ("Helvetica", 10)
-
-        # --- Light status section ---
-#         lights_frame = tk.Frame(main_frame, bg='#1c1c1c')
-#         lights_frame.pack(pady=20, fill='x', expand=True)
-#         self.create_light_indicator(lights_frame, "Red Light", self.red_light_var, "red")
-#         self.create_light_indicator(lights_frame, "Yellow Light", self.yellow_light_var, "#FFC300")
-#         self.create_light_indicator(lights_frame, "Green Light", self.green_light_var, "green")
 
         # --- Measurement data display section ---
         data_frame = tk.Frame(left_panel, bg='#1c1c1c')
@@ -166,9 +178,6 @@ class ServerDisplayApp:
         
         #***********concentration********#
         self.ax2.tick_params(axis='y', colors='#32CD32')
-        self.ax2.spines['top'].set_visible(False)
-        self.ax2.spines['bottom'].set_visible(False)
-        self.ax2.spines['left'].set_visible(False)
         self.ax2.spines['right'].set_color('white')
         self.ax2.yaxis.label.set_color('#32CD32')
         
@@ -177,28 +186,13 @@ class ServerDisplayApp:
         self.canvas.draw()
 
     def update_chart(self):
-        # Step 1: Get data from the StringVar
-        try:
-            conductivity_str = self.conductivity_var.get().split(' ')[0]
-            conductivity_value = float(conductivity_str)
-            self.conductivity_data.append(conductivity_value)
-        except (ValueError, IndexError):
-            pass
-        
-        try:
-            concentration_str = self.concentration_var.get().split(' ')[0]
-            concentration_value = float(concentration_str)
-            self.concentration_data.append(concentration_value)
-        except (ValueError, IndexError):
-            pass
-        
-        # Step 2: Redraw the plot
         self.ax1.clear()
         self.ax2.clear()
 
         # Plot the main data line
         if self.conductivity_data:
-             self.ax1.plot(list(self.conductivity_data), label="COND", color="#00BFFF", linewidth=2)
+             timestamps, values = zip(*self.conductivity_data)
+             self.ax1.plot(timestamps, values, label="COND", color="#00BFFF", linewidth=2)
         
         # Plot the three horizontal lines
         self.ax1.axhline(y=UPPER_LIMIT_COND, color='red', linestyle='--', label=f"UPPER: {UPPER_LIMIT_COND}")
@@ -206,38 +200,47 @@ class ServerDisplayApp:
         self.ax1.axhline(y=IDEAL_CONDUCTIVITY, color='yellow', linestyle=':', label=f"IDEAL: {IDEAL_CONDUCTIVITY}")
 
         if self.concentration_data:
-            self.ax2.plot(list(self.concentration_data), label = "Concentration", color="#32CD32", linewidth=2)
+            timestamps_c, values_c = zip(*self.concentration_data)
+            self.ax2.plot(timestamps_c, values_c, label = "Concentration", color="#32CD32", linewidth=2)
             
         self.ax2.axhline(y=UPPER_LIMIT_CONC, color='magenta', linestyle='--', label=f"Conc. Upper: {UPPER_LIMIT_CONC}")
         self.ax2.axhline(y=LOWER_LIMIT_CONC, color='cyan', linestyle='--', label=f"Conc. Lower: {LOWER_LIMIT_CONC}")
         self.ax2.axhline(y=IDEAL_CONCENTRATION, color='orange', linestyle=':', label=f"Conc. Ideal: {IDEAL_CONCENTRATION}")
-        # Step 3: Style the plot
-        self.ax1.set_title("On-time Chart", color='white')
-        self.ax1.set_xlabel("Time (datapoints)", color='white')
+        #Style the plot
+        self.ax1.set_title(f"Data History (Last {TOTAL_HISTORY_HOURS} Hours)", color='white')
         self.ax1.set_ylabel("Conductivity (uS/cm)", color='#00BFFF')
         self.ax2.set_ylabel("Concentration (%)", color='#32CD32')
         self.ax1.grid(True, linestyle='--', alpha=0.3)
         
+        self.ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        self.fig.autofmt_xdate()
+        
+        end_time = datetime.now()
+        start_time = end_time - timedelta(hours=TOTAL_HISTORY_HOURS)
+        self.ax1.set_xlim(start_time, end_time)
+        
+        # Adjust Y-axis limits for better visibility
+        if self.conductivity_data:
+            all_cond_values = [item[1] for item in self.conductivity_data]
+            min_val = min(min(all_cond_values), LOWER_LIMIT_COND)
+            max_val = max(max(all_cond_values), UPPER_LIMIT_COND)
+            self.ax1.set_ylim(min_val * 0.95, max_val * 1.05)
+            
+        if self.concentration_data:
+            all_conc_values = [item[1] for item in self.concentration_data]
+            min_c = min(min(all_conc_values), LOWER_LIMIT_CONC)
+            max_c = max(max(all_conc_values), UPPER_LIMIT_CONC)
+            range_c = max_c - min_c
+            if range_c < 0.001: range_c = 0.1
+            self.ax2.set_ylim(min_c - range_c * 0.1, max_c + range_c * 0.1)
+
         lines1, labels1 = self.ax1.get_legend_handles_labels()
         lines2, labels2 = self.ax2.get_legend_handles_labels()
         legend = self.ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
         for text in legend.get_texts():
             text.set_color("white")
         
-        # Adjust Y-axis limits for better visibility
-        if self.conductivity_data:
-            min_val = min(min(self.conductivity_data), LOWER_LIMIT_COND)
-            max_val = max(max(self.conductivity_data), UPPER_LIMIT_COND)
-            self.ax1.set_ylim(min_val * 0.95, max_val * 1.05)
-            
-        if self.concentration_data:
-            min_c = min(min(self.concentration_data), LOWER_LIMIT_CONC)
-            max_c = max(max(self.concentration_data), UPPER_LIMIT_CONC)
-            range_c = max_c - min_c
-            if range_c < 0.001: range_c = 0.1
-            self.ax2.set_ylim(min_c - range_c * 0.1, max_c + range_c * 0.1)
-
-        # Step 4: Redraw canvas
+        #Redraw canvas
         self.fig.tight_layout()
         self.canvas.draw()
         
@@ -300,3 +303,5 @@ if __name__ == "__main__":
     root_window.mainloop()
 
     log.info("GUI closed. Program exiting.")
+
+
