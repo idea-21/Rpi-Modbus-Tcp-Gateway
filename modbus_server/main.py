@@ -26,9 +26,12 @@ from rs485_handler import update_from_rs485_loop
 
 CHART_DATA_POINTS = 100
 CHART_UPDATE_INTERVAL = 1000
-IDEAL_CONDUCTIVITY = 300.0
-UPPER_LIMIT = 450.0
-LOWER_LIMIT = 150.0
+IDEAL_CONDUCTIVITY = 12500.0
+UPPER_LIMIT_COND = 15000.0
+LOWER_LIMIT_COND = 10000.0
+IDEAL_CONCENTRATION = 1.0
+UPPER_LIMIT_CONC = 1.2
+LOWER_LIMIT_CONC = 0.8
 
 # --------------------------------------------------------------------------- #
 # Basic Configuration
@@ -57,6 +60,7 @@ class ServerDisplayApp:
         self.root.bind("<Escape>", lambda e: root.destroy())
         
         self.conductivity_data = deque(maxlen=CHART_DATA_POINTS)
+        self.concentration_data = deque(maxlen=CHART_DATA_POINTS)
 
         # --- Create data variables ---
         self.conductivity_var = tk.StringVar(value="--.-- uS/cm")
@@ -144,62 +148,97 @@ class ServerDisplayApp:
         self.fig = Figure(figsize=(8, 6), dpi=100)
         self.fig.patch.set_facecolor('#1c1c1c') # Set figure background color
 
-        self.ax = self.fig.add_subplot(111)
-        self.ax.set_facecolor('#2a2a2a') # Set axes background color
-        self.ax.tick_params(axis='x', colors='white')
-        self.ax.tick_params(axis='y', colors='white')
-        self.ax.spines['bottom'].set_color('white')
-        self.ax.spines['top'].set_color('white') 
-        self.ax.spines['right'].set_color('white')
-        self.ax.spines['left'].set_color('white')
-        self.ax.title.set_color('white')
-        self.ax.xaxis.label.set_color('white')
-        self.ax.yaxis.label.set_color('white')
-
+        #**********conductivity**********#
+        self.ax1 = self.fig.add_subplot(111)
+        
+        self.ax2 = self.ax1.twinx()
+         
+        self.ax1.set_facecolor('#2a2a2a') # Set axes background color
+        self.ax1.tick_params(axis='x', colors='white')
+        self.ax1.tick_params(axis='y', colors='white')
+        self.ax1.spines['bottom'].set_color('white')
+        self.ax1.spines['top'].set_color('white') 
+        self.ax1.spines['right'].set_color('white')
+        self.ax1.spines['left'].set_color('white')
+        self.ax1.title.set_color('white')
+        self.ax1.xaxis.label.set_color('white')
+        self.ax1.yaxis.label.set_color('#00BFFF')
+        
+        #***********concentration********#
+        self.ax2.tick_params(axis='y', colors='#32CD32')
+        self.ax2.spines['top'].set_visible(False)
+        self.ax2.spines['bottom'].set_visible(False)
+        self.ax2.spines['left'].set_visible(False)
+        self.ax2.spines['right'].set_color('white')
+        self.ax2.yaxis.label.set_color('#32CD32')
+        
         self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.canvas.draw()
-        
+
     def update_chart(self):
         # Step 1: Get data from the StringVar
-        current_value_str = self.conductivity_var.get().split(' ')[0]
         try:
-            # Convert string to float, handle initial "--.--" state
-            current_value = float(current_value_str)
-            self.conductivity_data.append(current_value)
+            conductivity_str = self.conductivity_var.get().split(' ')[0]
+            conductivity_value = float(conductivity_str)
+            self.conductivity_data.append(conductivity_value)
         except (ValueError, IndexError):
-            # If conversion fails, do nothing and wait for the next update
+            pass
+        
+        try:
+            concentration_str = self.concentration_var.get().split(' ')[0]
+            concentration_value = float(concentration_str)
+            self.concentration_data.append(concentration_value)
+        except (ValueError, IndexError):
             pass
         
         # Step 2: Redraw the plot
-        self.ax.clear()
+        self.ax1.clear()
+        self.ax2.clear()
 
         # Plot the main data line
         if self.conductivity_data:
-             self.ax.plot(list(self.conductivity_data), label="COND", color="#00BFFF", linewidth=2)
+             self.ax1.plot(list(self.conductivity_data), label="COND", color="#00BFFF", linewidth=2)
         
         # Plot the three horizontal lines
-        self.ax.axhline(y=UPPER_LIMIT, color='red', linestyle='--', label=f"UPPER: {UPPER_LIMIT}")
-        self.ax.axhline(y=LOWER_LIMIT, color='green', linestyle='--', label=f"LOWER: {LOWER_LIMIT}")
-        self.ax.axhline(y=IDEAL_CONDUCTIVITY, color='yellow', linestyle=':', label=f"IDEAL: {IDEAL_CONDUCTIVITY}")
+        self.ax1.axhline(y=UPPER_LIMIT_COND, color='red', linestyle='--', label=f"UPPER: {UPPER_LIMIT_COND}")
+        self.ax1.axhline(y=LOWER_LIMIT_COND, color='green', linestyle='--', label=f"LOWER: {LOWER_LIMIT_COND}")
+        self.ax1.axhline(y=IDEAL_CONDUCTIVITY, color='yellow', linestyle=':', label=f"IDEAL: {IDEAL_CONDUCTIVITY}")
 
+        if self.concentration_data:
+            self.ax2.plot(list(self.concentration_data), label = "Concentration", color="#32CD32", linewidth=2)
+            
+        self.ax2.axhline(y=UPPER_LIMIT_CONC, color='magenta', linestyle='--', label=f"Conc. Upper: {UPPER_LIMIT_CONC}")
+        self.ax2.axhline(y=LOWER_LIMIT_CONC, color='cyan', linestyle='--', label=f"Conc. Lower: {LOWER_LIMIT_CONC}")
+        self.ax2.axhline(y=IDEAL_CONCENTRATION, color='orange', linestyle=':', label=f"Conc. Ideal: {IDEAL_CONCENTRATION}")
         # Step 3: Style the plot
-        self.ax.set_title("on-time chart", color='white')
-        self.ax.set_ylabel("cond (uS/cm)", color='white')
-        self.ax.set_xlabel("time", color='white')
-        self.ax.grid(True, linestyle='--', alpha=0.3)
+        self.ax1.set_title("On-time Chart", color='white')
+        self.ax1.set_xlabel("Time (datapoints)", color='white')
+        self.ax1.set_ylabel("Conductivity (uS/cm)", color='#00BFFF')
+        self.ax2.set_ylabel("Concentration (%)", color='#32CD32')
+        self.ax1.grid(True, linestyle='--', alpha=0.3)
         
-        legend = self.ax.legend()
+        lines1, labels1 = self.ax1.get_legend_handles_labels()
+        lines2, labels2 = self.ax2.get_legend_handles_labels()
+        legend = self.ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
         for text in legend.get_texts():
             text.set_color("white")
         
         # Adjust Y-axis limits for better visibility
         if self.conductivity_data:
-            min_val = min(min(self.conductivity_data), LOWER_LIMIT)
-            max_val = max(max(self.conductivity_data), UPPER_LIMIT)
-            self.ax.set_ylim(min_val - 10, max_val + 10)
+            min_val = min(min(self.conductivity_data), LOWER_LIMIT_COND)
+            max_val = max(max(self.conductivity_data), UPPER_LIMIT_COND)
+            self.ax1.set_ylim(min_val * 0.95, max_val * 1.05)
+            
+        if self.concentration_data:
+            min_c = min(min(self.concentration_data), LOWER_LIMIT_CONC)
+            max_c = max(max(self.concentration_data), UPPER_LIMIT_CONC)
+            range_c = max_c - min_c
+            if range_c < 0.001: range_c = 0.1
+            self.ax2.set_ylim(min_c - range_c * 0.1, max_c + range_c * 0.1)
 
         # Step 4: Redraw canvas
+        self.fig.tight_layout()
         self.canvas.draw()
         
         # Step 5: Schedule the next update
