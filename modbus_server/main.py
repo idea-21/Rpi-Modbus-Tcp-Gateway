@@ -18,6 +18,12 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.dates as mdates
 
+try:
+    plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei']
+    plt.rcParams['axes.unicode_minus'] = False 
+except Exception as e:
+    print(f"failed to set Chinese: {e}")
+
 # Modbus Imports
 from pymodbus.server import StartTcpServer
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusDeviceContext, ModbusServerContext
@@ -74,6 +80,7 @@ class ServerDisplayApp:
         self.conductivity_var = tk.StringVar(value="--.-- uS/cm")
         self.concentration_var = tk.StringVar(value="-.---- %")
         self.status_var = tk.StringVar(value="Initializing...")
+        self.advice_var = tk.StringVar(value="Waiting for data...")
         
         self.log_data_point()
         self.create_widgets()
@@ -93,6 +100,7 @@ class ServerDisplayApp:
                 if key == 'conductivity':
                     self.conductivity_var.set(f"{value:.2f} uS/cm")
                     self.last_conductivity_value = value
+                    self.update_advice(value)
                 elif key == 'concentration':
                     self.concentration_var.set(f"{value:.4f} %")
                     self.last_concentration_value = value
@@ -141,6 +149,7 @@ class ServerDisplayApp:
         title_font = ("Helvetica", 20, "bold")
         value_font = ("Helvetica", 40, "bold")
         status_font = ("Helvetica", 10)
+        advice_font = ("WenQuanYi Zen Hei", 24, "bold")
 
         # --- Measurement data display section ---
         data_frame = tk.Frame(left_panel, bg='#1c1c1c')
@@ -152,6 +161,13 @@ class ServerDisplayApp:
         tk.Label(data_frame, text="Concentration", font=title_font, fg='white', bg='#1c1c1c').pack(pady=(20, 0))
         tk.Label(data_frame, textvariable=self.concentration_var, font=value_font, fg='#32CD32', bg='#1c1c1c').pack()
 
+        separator = tk.Frame(data_frame, height=2, bg="grey", bd=0)
+        separator.pack(fill='x', pady=40, padx=20)
+        
+        tk.Label(data_frame, text="advice", font=title_font, fg='white', bg='#1c1c1c').pack()
+        self.advice_label = tk.Label(data_frame, textvariable=self.advice_var, font=advice_font, fg='yellow', bg='#1c1c1c')
+        self.advice_label.pack(pady=10)
+        
         self.create_chart(right_panel)
         # --- Status Bar ---
         tk.Label(self.root, textvariable=self.status_var, font=status_font, fg='grey', bg='#1c1c1c', anchor='w').pack(side="bottom", fill="x", padx=10, pady=5)
@@ -246,6 +262,17 @@ class ServerDisplayApp:
         
         # Step 5: Schedule the next update
         self.root.after(CHART_UPDATE_INTERVAL, self.update_chart)
+        
+    def update_advice(self, conductivity_value):
+        if conductivity_value > UPPER_LIMIT_COND:
+            self.advice_var.set("请添加纯水")
+            self.advice_label.config(fg='red')
+        elif conductivity_value < LOWER_LIMIT_COND:
+            self.advice_var.set("请添加碳酸钠")
+            self.advice_label.config(fg='red')
+        else:
+            self.advice_var.set("运行正常，无需操作")
+            self.advice_label.config(fg='#32CD32')
 
 # --------------------------------------------------------------------------- #
 # Main Execution Block
